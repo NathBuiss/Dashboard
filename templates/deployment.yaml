@@ -29,7 +29,7 @@ spec:
           image: "{{ .Values.dashboard.image.repository }}:{{ .Values.dashboard.image.tag }}"
           imagePullPolicy: {{ .Values.dashboard.image.pullPolicy }}
           command: ["sh", "-c"]
-          args: ["npm install --production --prefix /tmp/npm --cache /tmp/.npm && NODE_PATH=/tmp/npm/node_modules node /app/server.js"]
+          args: ["cp /app/package.json /tmp/ && npm install --production --prefix /tmp --cache /tmp/.npm && NODE_PATH=/tmp/node_modules node /app/server.js"]
           ports:
             - name: http
               containerPort: 3000
