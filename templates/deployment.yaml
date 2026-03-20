@@ -28,6 +28,8 @@ spec:
         - name: dashboard
           image: "{{ .Values.dashboard.image.repository }}:{{ .Values.dashboard.image.tag }}"
           imagePullPolicy: {{ .Values.dashboard.image.pullPolicy }}
+          command: ["sh", "-c"]
+          args: ["npm install --production --prefix /app && node server.js"]
           ports:
             - name: http
               containerPort: 3000
@@ -49,9 +51,12 @@ spec:
             httpGet:
               path: /
               port: http
-            initialDelaySeconds: 5
+            initialDelaySeconds: 30
             periodSeconds: 5
           volumeMounts:
+            - name: app-files
+              mountPath: /app/package.json
+              subPath: package.json
             - name: app-files
               mountPath: /app/server.js
               subPath: server.js

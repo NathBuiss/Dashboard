@@ -8,6 +8,17 @@ metadata:
   labels:
     {{- include "tools-dashboard.labels" . | nindent 4 }}
 data:
+  package.json: |
+    {
+      "name": "tools-dashboard",
+      "version": "1.0.0",
+      "dependencies": {
+        "express": "^4.18.0",
+        "js-yaml": "^4.1.0",
+        "axios": "^1.3.0"
+      }
+    }
+
   server.js: |
     const express = require('express');
     const path = require('path');
