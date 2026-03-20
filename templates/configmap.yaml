@@ -1,0 +1,1155 @@
+{{- $fullName := include "tools-dashboard.fullname" . -}}
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fullName }}-app-files
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tools-dashboard.labels" . | nindent 4 }}
+data:
+  server.js: |
+    const express = require('express');
+    const path = require('path');
+    const fs = require('fs');
+    const yaml = require('js-yaml');
+    const axios = require('axios');
+
+    const configPath = '/config/pages.yaml';
+    const dataPath = '/data/metrics.json';
+
+    if (!fs.existsSync('/config')) {
+      fs.mkdirSync('/config', { recursive: true });
+    }
+
+    if (!fs.existsSync('/data')) {
+      fs.mkdirSync('/data', { recursive: true });
+    }
+
+    const defaultConfig = {
+      pages: [
+        { id: 'home', title: 'Home', path: '/', description: 'Main dashboard page', icon: 'home', enabled: true },
+        { id: 'services', title: 'Services', path: '/services', description: 'Discovered services', icon: 'server', enabled: true },
+        { id: 'metrics', title: 'Metrics', path: '/metrics', description: 'Cluster metrics', icon: 'chart-line', enabled: true },
+        { id: 'admin', title: 'Admin', path: '/admin', description: 'Administration panel', icon: 'cogs', enabled: true }
+      ]
+    };
+
+    function loadConfig() {
+      try {
+        if (fs.existsSync(configPath)) {
+          return yaml.load(fs.readFileSync(configPath, 'utf8'));
+        }
+        fs.writeFileSync(configPath, yaml.dump(defaultConfig));
+        return defaultConfig;
+      } catch (error) {
+        console.error('Error loading config:', error);
+        return defaultConfig;
+      }
+    }
+
+    function saveConfig(config) {
+      try {
+        fs.writeFileSync(configPath, yaml.dump(config));
+        return true;
+      } catch (error) {
+        console.error('Error saving config:', error);
+        return false;
+      }
+    }
+
+    const app = express();
+    const PORT = process.env.PORT || 3000;
+
+    app.use(express.json());
+    app.use(express.urlencoded({ extended: true }));
+    app.use('/static', express.static(path.join(__dirname, 'public')));
+
+    function authenticate(req, res, next) {
+      const auth = req.headers.authorization;
+      if (!auth) {
+        return res.status(401).json({ error: 'Authentication required' });
+      }
+
+      const [type, credentials] = auth.split(' ');
+      if (type !== 'Basic') {
+        return res.status(401).json({ error: 'Authentication required' });
+      }
+
+      const [username, password] = Buffer.from(credentials, 'base64').toString().split(':');
+      const expectedUsername = process.env.ADMIN_USERNAME || 'admin';
+      const expectedPassword = process.env.ADMIN_PASSWORD || 'admin123';
+
+      if (username === expectedUsername && password === expectedPassword) {
+        next();
+      } else {
+        res.set('WWW-Authenticate', 'Basic realm="Admin"');
+        return res.status(401).json({ error: 'Invalid credentials' });
+      }
+    }
+
+    app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'views', 'index.html')));
+    app.get('/services', (req, res) => res.sendFile(path.join(__dirname, 'views', 'services.html')));
+    app.get('/metrics', (req, res) => res.sendFile(path.join(__dirname, 'views', 'metrics.html')));
+    app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, 'views', 'admin.html')));
+
+    app.get('/api/pages', (req, res) => {
+      try {
+        res.json(loadConfig());
+      } catch (error) {
+        res.status(500).json({ error: 'Failed to load configuration' });
+      }
+    });
+
+    app.post('/api/pages', authenticate, (req, res) => {
+      try {
+        const newConfig = req.body;
+        if (!newConfig || !Array.isArray(newConfig.pages)) {
+          return res.status(400).json({ error: 'Invalid configuration format' });
+        }
+        if (saveConfig(newConfig)) {
+          res.json({ success: true, message: 'Configuration updated successfully' });
+        } else {
+          res.status(500).json({ error: 'Failed to save configuration' });
+        }
+      } catch (error) {
+        console.error('Error updating pages:', error);
+        res.status(500).json({ error: 'Internal server error' });
+      }
+    });
+
+    app.get('/api/k8s/:endpoint(*)', authenticate, async (req, res) => {
+      try {
+        const apiUrl = `https://${process.env.KUBERNETES_SERVICE_HOST}:${process.env.KUBERNETES_SERVICE_PORT}/api/v1/${req.params.endpoint}`;
+        const response = await axios.get(apiUrl, {
+          httpsAgent: new (require('https')).Agent({
+            ca: fs.readFileSync('/var/run/secrets/kubernetes.io/serviceaccount/ca.crt'),
+            rejectUnauthorized: true
+          }),
+          headers: {
+            'Authorization': `Bearer ${fs.readFileSync('/var/run/secrets/kubernetes.io/serviceaccount/token', 'utf8')}`,
+            'Accept': 'application/json'
+          }
+        });
+        res.json(response.data);
+      } catch (error) {
+        console.error('Kubernetes API error:', error.message);
+        res.status(error.response?.status || 500).json({
+          error: 'Failed to connect to Kubernetes API',
+          details: error.message
+        });
+      }
+    });
+
+    app.use((req, res) => res.status(404).send('Page not found'));
+
+    app.use((err, req, res, next) => {
+      console.error(err.stack);
+      res.status(500).send('Something broke!');
+    });
+
+    app.listen(PORT, () => {
+      console.log(`Dashboard server running on port ${PORT}`);
+    });
+
+  views__index.html: |
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Tools Dashboard</title>
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+        <link rel="stylesheet" href="/static/css/style.css">
+    </head>
+    <body>
+        <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+            <div class="container">
+                <a class="navbar-brand" href="/"><i class="fas fa-toolbox"></i> Tools Dashboard</a>
+                <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                    <span class="navbar-toggler-icon"></span>
+                </button>
+                <div class="collapse navbar-collapse" id="navbarNav">
+                    <ul class="navbar-nav me-auto">
+                        <li class="nav-item"><a class="nav-link active" href="/"><i class="fas fa-home"></i> Home</a></li>
+                        <li class="nav-item"><a class="nav-link" href="/services"><i class="fas fa-server"></i> Services</a></li>
+                        <li class="nav-item"><a class="nav-link" href="/metrics"><i class="fas fa-chart-line"></i> Metrics</a></li>
+                    </ul>
+                    <div class="d-flex">
+                        <a href="/admin" class="btn btn-outline-light"><i class="fas fa-cogs"></i> Admin</a>
+                    </div>
+                </div>
+            </div>
+        </nav>
+        <div class="container mt-4">
+            <div class="row">
+                <div class="col-md-12">
+                    <div class="card">
+                        <div class="card-header bg-primary text-white">
+                            <h4><i class="fas fa-toolbox"></i> Welcome to Tools Dashboard</h4>
+                        </div>
+                        <div class="card-body">
+                            <p class="lead">Your central hub for managing tools and services in your Kubernetes cluster.</p>
+                            <div class="row mt-4">
+                                <div class="col-md-4">
+                                    <div class="card text-center">
+                                        <div class="card-body">
+                                            <i class="fas fa-server fa-3x text-primary mb-3"></i>
+                                            <h5 class="card-title">Service Discovery</h5>
+                                            <p class="card-text">Automatically discover services with Traefik annotations in your cluster.</p>
+                                            <a href="/services" class="btn btn-outline-primary">View Services</a>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-md-4">
+                                    <div class="card text-center">
+                                        <div class="card-body">
+                                            <i class="fas fa-chart-line fa-3x text-success mb-3"></i>
+                                            <h5 class="card-title">Cluster Metrics</h5>
+                                            <p class="card-text">Monitor your Kubernetes cluster performance and resource usage.</p>
+                                            <a href="/metrics" class="btn btn-outline-success">View Metrics</a>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-md-4">
+                                    <div class="card text-center">
+                                        <div class="card-body">
+                                            <i class="fas fa-cogs fa-3x text-warning mb-3"></i>
+                                            <h5 class="card-title">Administration</h5>
+                                            <p class="card-text">Manage dashboard configuration and user access.</p>
+                                            <a href="/admin" class="btn btn-outline-warning">Admin Panel</a>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+        <script src="/static/js/main.js"></script>
+    </body>
+    </html>
+
+  views__services.html: |
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Services - Tools Dashboard</title>
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+        <link rel="stylesheet" href="/static/css/style.css">
+    </head>
+    <body>
+        <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+            <div class="container">
+                <a class="navbar-brand" href="/"><i class="fas fa-toolbox"></i> Tools Dashboard</a>
+                <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                    <span class="navbar-toggler-icon"></span>
+                </button>
+                <div class="collapse navbar-collapse" id="navbarNav">
+                    <ul class="navbar-nav me-auto">
+                        <li class="nav-item"><a class="nav-link" href="/"><i class="fas fa-home"></i> Home</a></li>
+                        <li class="nav-item"><a class="nav-link active" href="/services"><i class="fas fa-server"></i> Services</a></li>
+                        <li class="nav-item"><a class="nav-link" href="/metrics"><i class="fas fa-chart-line"></i> Metrics</a></li>
+                    </ul>
+                    <div class="d-flex">
+                        <a href="/admin" class="btn btn-outline-light"><i class="fas fa-cogs"></i> Admin</a>
+                    </div>
+                </div>
+            </div>
+        </nav>
+        <div class="container mt-4">
+            <div class="row">
+                <div class="col-md-12">
+                    <div class="card">
+                        <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center">
+                            <h4><i class="fas fa-server"></i> Discovered Services</h4>
+                            <div class="input-group" style="width: 300px;">
+                                <span class="input-group-text"><i class="fas fa-search"></i></span>
+                                <input type="text" id="searchInput" class="form-control" placeholder="Search services...">
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <div class="alert alert-info">
+                                <i class="fas fa-info-circle"></i> Discovering services with Traefik annotations in the cluster...
+                            </div>
+                            <div id="servicesContainer" class="row">
+                                <div class="col-12 text-center">
+                                    <div class="spinner-border text-primary" role="status">
+                                        <span class="visually-hidden">Loading...</span>
+                                    </div>
+                                    <p class="mt-2">Discovering services...</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+        <script src="/static/js/services.js"></script>
+    </body>
+    </html>
+
+  views__metrics.html: |
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Metrics - Tools Dashboard</title>
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+        <link rel="stylesheet" href="/static/css/style.css">
+        <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    </head>
+    <body>
+        <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+            <div class="container">
+                <a class="navbar-brand" href="/"><i class="fas fa-toolbox"></i> Tools Dashboard</a>
+                <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                    <span class="navbar-toggler-icon"></span>
+                </button>
+                <div class="collapse navbar-collapse" id="navbarNav">
+                    <ul class="navbar-nav me-auto">
+                        <li class="nav-item"><a class="nav-link" href="/"><i class="fas fa-home"></i> Home</a></li>
+                        <li class="nav-item"><a class="nav-link" href="/services"><i class="fas fa-server"></i> Services</a></li>
+                        <li class="nav-item"><a class="nav-link active" href="/metrics"><i class="fas fa-chart-line"></i> Metrics</a></li>
+                    </ul>
+                    <div class="d-flex">
+                        <a href="/admin" class="btn btn-outline-light"><i class="fas fa-cogs"></i> Admin</a>
+                    </div>
+                </div>
+            </div>
+        </nav>
+        <div class="container mt-4">
+            <div class="row">
+                <div class="col-md-12">
+                    <div class="card">
+                        <div class="card-header bg-primary text-white">
+                            <h4><i class="fas fa-chart-line"></i> Kubernetes Cluster Metrics</h4>
+                        </div>
+                        <div class="card-body">
+                            <div class="row">
+                                <div class="col-md-3">
+                                    <div class="card bg-light mb-3">
+                                        <div class="card-body text-center">
+                                            <h5 class="card-title">Nodes</h5>
+                                            <div class="display-4" id="nodeCount">0</div>
+                                            <i class="fas fa-server fa-2x text-primary"></i>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-md-3">
+                                    <div class="card bg-light mb-3">
+                                        <div class="card-body text-center">
+                                            <h5 class="card-title">Pods</h5>
+                                            <div class="display-4" id="podCount">0</div>
+                                            <i class="fas fa-cubes fa-2x text-success"></i>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-md-3">
+                                    <div class="card bg-light mb-3">
+                                        <div class="card-body text-center">
+                                            <h5 class="card-title">CPU Usage</h5>
+                                            <div class="display-4" id="cpuUsage">0%</div>
+                                            <i class="fas fa-microchip fa-2x text-warning"></i>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-md-3">
+                                    <div class="card bg-light mb-3">
+                                        <div class="card-body text-center">
+                                            <h5 class="card-title">Memory</h5>
+                                            <div class="display-4" id="memoryUsage">0%</div>
+                                            <i class="fas fa-memory fa-2x text-danger"></i>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="row mt-4">
+                                <div class="col-md-6">
+                                    <div class="card">
+                                        <div class="card-header"><h5><i class="fas fa-chart-bar"></i> CPU Usage by Node</h5></div>
+                                        <div class="card-body"><canvas id="cpuChart" height="150"></canvas></div>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="card">
+                                        <div class="card-header"><h5><i class="fas fa-chart-bar"></i> Memory Usage by Node</h5></div>
+                                        <div class="card-body"><canvas id="memoryChart" height="150"></canvas></div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="row mt-4">
+                                <div class="col-md-12">
+                                    <div class="card">
+                                        <div class="card-header"><h5><i class="fas fa-list"></i> Node Details</h5></div>
+                                        <div class="card-body">
+                                            <div class="table-responsive">
+                                                <table class="table table-striped">
+                                                    <thead>
+                                                        <tr>
+                                                            <th>Node</th><th>Status</th><th>CPU</th>
+                                                            <th>Memory</th><th>Pods</th><th>Version</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody id="nodeTableBody">
+                                                        <tr><td colspan="6" class="text-center">Loading node information...</td></tr>
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+        <script src="/static/js/metrics.js"></script>
+    </body>
+    </html>
+
+  views__admin.html: |
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Admin - Tools Dashboard</title>
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+        <link rel="stylesheet" href="/static/css/style.css">
+    </head>
+    <body>
+        <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+            <div class="container">
+                <a class="navbar-brand" href="/"><i class="fas fa-toolbox"></i> Tools Dashboard</a>
+                <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                    <span class="navbar-toggler-icon"></span>
+                </button>
+                <div class="collapse navbar-collapse" id="navbarNav">
+                    <ul class="navbar-nav me-auto">
+                        <li class="nav-item"><a class="nav-link" href="/"><i class="fas fa-home"></i> Home</a></li>
+                        <li class="nav-item"><a class="nav-link" href="/services"><i class="fas fa-server"></i> Services</a></li>
+                        <li class="nav-item"><a class="nav-link" href="/metrics"><i class="fas fa-chart-line"></i> Metrics</a></li>
+                    </ul>
+                    <div class="d-flex">
+                        <a href="/admin" class="btn btn-light"><i class="fas fa-cogs"></i> Admin</a>
+                    </div>
+                </div>
+            </div>
+        </nav>
+        <div class="container mt-4">
+            <div class="row">
+                <div class="col-md-12">
+                    <div class="card">
+                        <div class="card-header bg-warning text-dark d-flex justify-content-between align-items-center">
+                            <h4><i class="fas fa-cogs"></i> Administration Panel</h4>
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="editModeSwitch">
+                                <label class="form-check-label" for="editModeSwitch">Edit Mode</label>
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <div class="alert alert-info">
+                                <i class="fas fa-info-circle"></i> Manage dashboard pages and configuration.
+                            </div>
+                            <div id="adminContent">
+                                <div class="text-center">
+                                    <div class="spinner-border text-primary" role="status">
+                                        <span class="visually-hidden">Loading...</span>
+                                    </div>
+                                    <p class="mt-2">Loading configuration...</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+        <script src="/static/js/admin.js"></script>
+    </body>
+    </html>
+
+  public__css__style.css: |
+    /* Custom styles for Tools Dashboard */
+
+    body {
+        background-color: #f8f9fa;
+    }
+
+    .navbar-brand {
+        font-weight: 600;
+    }
+
+    .card {
+        border: none;
+        border-radius: 10px;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        margin-bottom: 1.5rem;
+    }
+
+    .card-header {
+        border-radius: 10px 10px 0 0 !important;
+        font-weight: 600;
+    }
+
+    .display-4 {
+        font-size: 2.5rem;
+        font-weight: 300;
+    }
+
+    .table th {
+        font-weight: 600;
+    }
+
+    .alert {
+        border-radius: 10px;
+    }
+
+    .service-card {
+        transition: all 0.3s ease;
+        border-radius: 10px;
+        overflow: hidden;
+        height: 200px;
+    }
+
+    .service-card:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 10px 20px rgba(0, 0, 0, 0.1);
+    }
+
+    .service-icon { font-size: 3rem; margin-bottom: 1rem; }
+    .service-name { font-size: 1.2rem; font-weight: 600; margin-bottom: 0.5rem; }
+    .service-description { color: #6c757d; font-size: 0.9rem; }
+    .service-badge { font-size: 0.8rem; padding: 0.25rem 0.5rem; }
+
+    .bg-traefik { background-color: #4ec8ec !important; color: white; }
+    .bg-metrics { background-color: #6f42c1 !important; color: white; }
+    .bg-admin { background-color: #fd7e14 !important; color: white; }
+    .text-traefik { color: #4ec8ec; }
+    .text-metrics { color: #6f42c1; }
+    .text-admin { color: #fd7e14; }
+
+    .page-item { cursor: pointer; }
+    .page-form { display: none; }
+    .edit-controls { display: none; }
+    .edit-mode .edit-controls { display: block; }
+    .edit-mode .view-mode { display: none; }
+
+    .chart-container { position: relative; height: 300px; }
+
+    @media (max-width: 768px) {
+        .display-4 { font-size: 2rem; }
+        .service-card { height: 180px; }
+    }
+
+    @media (max-width: 576px) {
+        .display-4 { font-size: 1.8rem; }
+        .service-card { height: 160px; }
+    }
+
+    @keyframes fadeIn {
+        from { opacity: 0; }
+        to { opacity: 1; }
+    }
+
+    .fade-in { animation: fadeIn 0.5s ease-in; }
+
+    .btn-primary-gradient { background: linear-gradient(45deg, #0d6efd, #0b5ed7); border: none; }
+    .btn-success-gradient { background: linear-gradient(45deg, #198754, #157347); border: none; }
+    .btn-warning-gradient { background: linear-gradient(45deg, #fd7e14, #f76707); border: none; }
+    .btn-danger-gradient { background: linear-gradient(45deg, #dc3545, #bb2d3b); border: none; }
+
+  public__js__main.js: |
+    (function() {
+        function initTooltips() {
+            const tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
+            tooltipTriggerList.map(function(tooltipTriggerEl) {
+                return new bootstrap.Tooltip(tooltipTriggerEl);
+            });
+        }
+
+        function initPopovers() {
+            const popoverTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="popover"]'));
+            popoverTriggerList.map(function(popoverTriggerEl) {
+                return new bootstrap.Popover(popoverTriggerEl);
+            });
+        }
+
+        function initDarkMode() {
+            const darkModeToggle = document.getElementById('darkModeToggle');
+            if (!darkModeToggle) return;
+
+            const isDarkMode = localStorage.getItem('darkMode') === 'true';
+            if (isDarkMode) {
+                document.body.classList.add('dark-mode');
+                darkModeToggle.checked = true;
+            }
+
+            darkModeToggle.addEventListener('change', function() {
+                if (this.checked) {
+                    document.body.classList.add('dark-mode');
+                    localStorage.setItem('darkMode', 'true');
+                } else {
+                    document.body.classList.remove('dark-mode');
+                    localStorage.setItem('darkMode', 'false');
+                }
+            });
+        }
+
+        function showToast(message, type = 'info', duration = 5000) {
+            let toastContainer = document.getElementById('toastContainer');
+            if (!toastContainer) {
+                toastContainer = document.createElement('div');
+                toastContainer.id = 'toastContainer';
+                toastContainer.style.position = 'fixed';
+                toastContainer.style.top = '20px';
+                toastContainer.style.right = '20px';
+                toastContainer.style.zIndex = '1000';
+                document.body.appendChild(toastContainer);
+            }
+
+            const toast = document.createElement('div');
+            toast.className = `toast align-items-center text-white bg-${type} border-0 mb-2`;
+            toast.role = 'alert';
+            toast.ariaLive = 'assertive';
+            toast.ariaAtomic = 'true';
+            toast.innerHTML = `
+                <div class="d-flex">
+                    <div class="toast-body">${message}</div>
+                    <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+                </div>`;
+
+            toastContainer.appendChild(toast);
+            const bsToast = new bootstrap.Toast(toast, { autohide: true, delay: duration });
+            bsToast.show();
+
+            toast.addEventListener('hidden.bs.toast', () => {
+                toast.remove();
+                if (toastContainer.children.length === 0) toastContainer.remove();
+            });
+        }
+
+        function formatDate(dateString) {
+            const options = { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' };
+            return new Date(dateString).toLocaleDateString(undefined, options);
+        }
+
+        function formatBytes(bytes, decimals = 2) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const dm = decimals < 0 ? 0 : decimals;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+        }
+
+        function copyToClipboard(text, successMessage = 'Copied to clipboard!') {
+            if (!navigator.clipboard) {
+                const textArea = document.createElement('textarea');
+                textArea.value = text;
+                textArea.style.position = 'fixed';
+                textArea.style.opacity = '0';
+                document.body.appendChild(textArea);
+                textArea.select();
+                try {
+                    document.execCommand('copy');
+                    showToast(successMessage);
+                } catch (err) {
+                    showToast('Failed to copy text', 'danger');
+                }
+                document.body.removeChild(textArea);
+                return;
+            }
+            navigator.clipboard.writeText(text).then(
+                () => showToast(successMessage),
+                (err) => showToast('Failed to copy text: ' + err, 'danger')
+            );
+        }
+
+        function init() {
+            initTooltips();
+            initPopovers();
+            initDarkMode();
+            window.showToast = showToast;
+            window.formatDate = formatDate;
+            window.formatBytes = formatBytes;
+            window.copyToClipboard = copyToClipboard;
+        }
+
+        document.addEventListener('DOMContentLoaded', init);
+    })();
+
+  public__js__services.js: |
+    (function() {
+        async function fetchServices() {
+            try {
+                const response = await fetch('/api/k8s/services', {
+                    headers: { 'Authorization': 'Basic ' + btoa(
+                        (document.cookie.match(/auth=([^;]+)/) || ['', ''])[1] || 'admin:admin123'
+                    )}
+                });
+                if (response.ok) {
+                    return processServicesData(await response.json());
+                }
+                console.warn('Failed to fetch services from Kubernetes API, using mock data');
+                return getMockServices();
+            } catch (error) {
+                console.error('Error fetching services:', error);
+                return getMockServices();
+            }
+        }
+
+        function processServicesData(data) {
+            const services = [];
+            if (data && data.items) {
+                data.items.forEach(item => {
+                    const annotations = item.metadata.annotations || {};
+                    const hasTraefik = Object.keys(annotations).some(key =>
+                        key.includes('traefik') || key.includes('ingress')
+                    );
+                    if (hasTraefik) {
+                        const service = {
+                            name: item.metadata.name,
+                            namespace: item.metadata.namespace,
+                            clusterIP: item.spec.clusterIP,
+                            ports: item.spec.ports || [],
+                            annotations: annotations,
+                            created: item.metadata.creationTimestamp
+                        };
+                        Object.assign(service, extractTraefikInfo(annotations));
+                        services.push(service);
+                    }
+                });
+            }
+            return services;
+        }
+
+        function extractTraefikInfo(annotations) {
+            const info = { traefikHost: null, traefikPath: null, traefikService: null, traefikPort: null, description: null };
+            for (const [key, value] of Object.entries(annotations)) {
+                if (key.includes('router.rule') && value.includes('Host')) {
+                    const hostMatch = value.match(/Host\(`([^`]+)`\)/);
+                    if (hostMatch) info.traefikHost = hostMatch[1];
+                } else if (key.includes('router.rule') && value.includes('PathPrefix')) {
+                    const pathMatch = value.match(/PathPrefix\(`([^`]+)`\)/);
+                    if (pathMatch) info.traefikPath = pathMatch[1];
+                } else if (key.includes('router.service')) {
+                    info.traefikService = value;
+                } else if (key.includes('service.port') || key.includes('router.port')) {
+                    info.traefikPort = value;
+                } else if (key.toLowerCase().includes('description')) {
+                    info.description = value;
+                }
+            }
+            return info;
+        }
+
+        function getMockServices() {
+            return [
+                { name: 'traefik-ingress', namespace: 'traefik', clusterIP: '10.43.123.45', ports: [{port: 80, protocol: 'TCP', name: 'http'}, {port: 443, protocol: 'TCP', name: 'https'}], traefikHost: 'traefik.example.com', traefikPath: '/', description: 'Traefik ingress controller dashboard', created: '2023-01-15T10:30:00Z' },
+                { name: 'prometheus', namespace: 'monitoring', clusterIP: '10.43.67.89', ports: [{port: 9090, protocol: 'TCP', name: 'web'}], traefikHost: 'prometheus.example.com', traefikPath: '/', description: 'Prometheus monitoring service', created: '2023-01-10T08:15:00Z' },
+                { name: 'grafana', namespace: 'monitoring', clusterIP: '10.43.98.76', ports: [{port: 3000, protocol: 'TCP', name: 'http'}], traefikHost: 'grafana.example.com', traefikPath: '/', description: 'Grafana analytics dashboard', created: '2023-01-12T14:20:00Z' },
+                { name: 'jenkins', namespace: 'ci-cd', clusterIP: '10.43.55.66', ports: [{port: 8080, protocol: 'TCP', name: 'http'}], traefikHost: 'jenkins.example.com', traefikPath: '/', description: 'Jenkins CI/CD pipeline', created: '2023-01-08T09:45:00Z' }
+            ];
+        }
+
+        function renderServices(services) {
+            const container = document.getElementById('servicesContainer');
+            if (services.length === 0) {
+                container.innerHTML = `<div class="col-12"><div class="alert alert-warning"><i class="fas fa-exclamation-triangle"></i> No services with Traefik annotations were found in the cluster.</div></div>`;
+                return;
+            }
+            container.innerHTML = services.map(service => {
+                const serviceUrl = service.traefikHost ? `https://${service.traefikHost}${service.traefikPath || ''}` : '#';
+                return `
+                <div class="col-md-6 col-lg-4 mb-4">
+                    <div class="card service-card h-100">
+                        <div class="card-body d-flex flex-column">
+                            <div class="text-center mb-3">
+                                <i class="fas fa-server service-icon text-primary"></i>
+                                <h5 class="service-name">${service.name}</h5>
+                            </div>
+                            <div class="mb-3 flex-grow-1">
+                                <p class="service-description">${service.description || 'Service exposed through Traefik ingress'}</p>
+                                <div class="row g-2">
+                                    <div class="col-6"><small class="text-muted">Namespace</small><div class="fw-bold">${service.namespace}</div></div>
+                                    <div class="col-6"><small class="text-muted">Cluster IP</small><div class="fw-bold">${service.clusterIP}</div></div>
+                                    ${service.traefikHost ? `<div class="col-12"><small class="text-muted">Host</small><div class="fw-bold text-break">${service.traefikHost}</div></div>` : ''}
+                                    ${service.traefikPath ? `<div class="col-12"><small class="text-muted">Path</small><div class="fw-bold">${service.traefikPath}</div></div>` : ''}
+                                </div>
+                            </div>
+                            <div class="text-center mt-auto">
+                                <a href="${serviceUrl}" target="_blank" class="btn btn-outline-primary btn-sm"><i class="fas fa-external-link-alt"></i> Access</a>
+                            </div>
+                        </div>
+                    </div>
+                </div>`;
+            }).join('');
+        }
+
+        function filterServices(services, query) {
+            if (!query || query.trim() === '') return services;
+            const lowerQuery = query.toLowerCase();
+            return services.filter(s =>
+                s.name.toLowerCase().includes(lowerQuery) ||
+                s.namespace.toLowerCase().includes(lowerQuery) ||
+                (s.description && s.description.toLowerCase().includes(lowerQuery)) ||
+                (s.traefikHost && s.traefikHost.toLowerCase().includes(lowerQuery))
+            );
+        }
+
+        async function init() {
+            try {
+                document.getElementById('servicesContainer').innerHTML = `<div class="col-12 text-center"><div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading...</span></div><p class="mt-2">Discovering services...</p></div>`;
+                const services = await fetchServices();
+                renderServices(services);
+                document.getElementById('searchInput').addEventListener('input', function() {
+                    renderServices(filterServices(services, this.value));
+                });
+            } catch (error) {
+                console.error('Error initializing services page:', error);
+                document.getElementById('servicesContainer').innerHTML = `<div class="col-12"><div class="alert alert-danger"><i class="fas fa-exclamation-triangle"></i> Error loading services: ${error.message}</div></div>`;
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', init);
+    })();
+
+  public__js__metrics.js: |
+    (function() {
+        let nodeData = [];
+        let podData = [];
+        let cpuChart = null;
+        let memoryChart = null;
+
+        async function fetchMetrics() {
+            try {
+                const headers = { 'Authorization': 'Basic ' + btoa('admin:admin123') };
+                const [nodesResponse, podsResponse] = await Promise.all([
+                    fetch('/api/k8s/nodes', { headers }),
+                    fetch('/api/k8s/pods', { headers })
+                ]);
+
+                if (!nodesResponse.ok) throw new Error(`Failed to fetch nodes: ${nodesResponse.status}`);
+                if (!podsResponse.ok) throw new Error(`Failed to fetch pods: ${podsResponse.status}`);
+
+                nodeData = processNodesData(await nodesResponse.json());
+                podData = processPodsData(await podsResponse.json());
+
+                updateMetricsDisplay();
+                updateCharts();
+                updateNodeTable();
+            } catch (error) {
+                console.error('Error fetching metrics:', error);
+                document.getElementById('nodeTableBody').innerHTML = `<tr><td colspan="6" class="text-center text-danger"><i class="fas fa-exclamation-triangle"></i> Error loading metrics: ${error.message}</td></tr>`;
+                ['nodeCount', 'podCount', 'cpuUsage', 'memoryUsage'].forEach(id => {
+                    document.getElementById(id).textContent = 'Error';
+                });
+            }
+        }
+
+        function processNodesData(nodesData) {
+            if (!nodesData || !nodesData.items) return [];
+            return nodesData.items.map(item => {
+                const node = {
+                    name: item.metadata.name,
+                    status: 'Unknown',
+                    cpuCapacity: '0', cpuAllocatable: '0',
+                    memoryCapacity: '0', memoryAllocatable: '0',
+                    podCapacity: 0, podAllocatable: 0,
+                    kubeVersion: '', osImage: '',
+                    creationTimestamp: item.metadata.creationTimestamp
+                };
+                if (item.status && item.status.conditions) {
+                    const ready = item.status.conditions.find(c => c.type === 'Ready');
+                    if (ready) node.status = ready.status === 'True' ? 'Ready' : 'NotReady';
+                }
+                if (item.status) {
+                    if (item.status.capacity) {
+                        if (item.status.capacity.cpu) node.cpuCapacity = parseCpuResource(item.status.capacity.cpu);
+                        if (item.status.capacity.memory) node.memoryCapacity = parseMemoryResource(item.status.capacity.memory);
+                        if (item.status.capacity.pods) node.podCapacity = parseInt(item.status.capacity.pods) || 0;
+                    }
+                    if (item.status.allocatable) {
+                        if (item.status.allocatable.cpu) node.cpuAllocatable = parseCpuResource(item.status.allocatable.cpu);
+                        if (item.status.allocatable.memory) node.memoryAllocatable = parseMemoryResource(item.status.allocatable.memory);
+                        if (item.status.allocatable.pods) node.podAllocatable = parseInt(item.status.allocatable.pods) || 0;
+                    }
+                    if (item.status.nodeInfo) {
+                        node.kubeVersion = item.status.nodeInfo.kubeletVersion || '';
+                        node.osImage = item.status.nodeInfo.osImage || '';
+                    }
+                }
+                return node;
+            });
+        }
+
+        function processPodsData(podsData) {
+            if (!podsData || !podsData.items) return [];
+            return podsData.items.map(item => {
+                const pod = {
+                    name: item.metadata.name,
+                    namespace: item.metadata.namespace,
+                    node: item.spec.nodeName || 'Unknown',
+                    status: item.status ? (item.status.phase || 'Unknown') : 'Unknown',
+                    containers: []
+                };
+                if (item.status && item.status.containerStatuses) {
+                    item.status.containerStatuses.forEach(container => {
+                        const info = { name: container.name, ready: container.ready, restartCount: container.restartCount || 0, image: container.image || '' };
+                        if (container.state && container.state.running) {
+                            info.uptime = formatDuration(new Date() - new Date(container.state.running.startedAt));
+                        }
+                        pod.containers.push(info);
+                    });
+                }
+                return pod;
+            });
+        }
+
+        function parseCpuResource(cpuStr) {
+            if (!cpuStr) return 0;
+            return cpuStr.endsWith('m') ? parseInt(cpuStr) / 1000 : parseFloat(cpuStr);
+        }
+
+        function parseMemoryResource(memoryStr) {
+            if (!memoryStr) return 0;
+            const units = { 'Ki': 1024, 'Mi': 1024**2, 'Gi': 1024**3, 'Ti': 1024**4, 'K': 1000, 'M': 1000**2, 'G': 1000**3, 'T': 1000**4 };
+            for (const [suffix, multiplier] of Object.entries(units).sort((a, b) => b[0].length - a[0].length)) {
+                if (memoryStr.endsWith(suffix)) return parseFloat(memoryStr.slice(0, -suffix.length)) * multiplier;
+            }
+            return parseFloat(memoryStr);
+        }
+
+        function formatDuration(ms) {
+            if (ms < 1000) return '0s';
+            const parts = [];
+            const days = Math.floor(ms / 86400000); if (days) parts.push(`${days}d`);
+            const hours = Math.floor((ms % 86400000) / 3600000); if (hours) parts.push(`${hours}h`);
+            const minutes = Math.floor((ms % 3600000) / 60000); if (minutes) parts.push(`${minutes}m`);
+            const seconds = Math.floor((ms % 60000) / 1000); if (seconds || !parts.length) parts.push(`${seconds}s`);
+            return parts.slice(0, 2).join(' ');
+        }
+
+        function updateMetricsDisplay() {
+            document.getElementById('nodeCount').textContent = nodeData.length;
+            document.getElementById('podCount').textContent = podData.length;
+            document.getElementById('cpuUsage').textContent = 'N/A';
+            document.getElementById('memoryUsage').textContent = 'N/A';
+        }
+
+        function updateCharts() {
+            if (cpuChart) cpuChart.destroy();
+            if (memoryChart) memoryChart.destroy();
+            if (!nodeData.length) return;
+
+            const labels = nodeData.map(n => n.name);
+            cpuChart = new Chart(document.getElementById('cpuChart').getContext('2d'), {
+                type: 'bar',
+                data: { labels, datasets: [{ label: 'CPU Allocatable (cores)', data: nodeData.map(n => parseFloat(n.cpuAllocatable)), backgroundColor: 'rgba(54, 162, 235, 0.6)', borderColor: 'rgba(54, 162, 235, 1)', borderWidth: 1 }] },
+                options: { responsive: true, scales: { y: { beginAtZero: true, title: { display: true, text: 'CPU (cores)' } } } }
+            });
+            memoryChart = new Chart(document.getElementById('memoryChart').getContext('2d'), {
+                type: 'bar',
+                data: { labels, datasets: [{ label: 'Memory Allocatable (GB)', data: nodeData.map(n => +(parseFloat(n.memoryAllocatable) / 1024**3).toFixed(2)), backgroundColor: 'rgba(255, 99, 132, 0.6)', borderColor: 'rgba(255, 99, 132, 1)', borderWidth: 1 }] },
+                options: { responsive: true, scales: { y: { beginAtZero: true, title: { display: true, text: 'Memory (GB)' } } } }
+            });
+        }
+
+        function updateNodeTable() {
+            if (!nodeData.length) {
+                document.getElementById('nodeTableBody').innerHTML = `<tr><td colspan="6" class="text-center">No nodes found</td></tr>`;
+                return;
+            }
+            document.getElementById('nodeTableBody').innerHTML = nodeData.map(node => {
+                const memGB = (parseFloat(node.memoryAllocatable) / 1024**3).toFixed(2);
+                const memCapGB = (parseFloat(node.memoryCapacity) / 1024**3).toFixed(2);
+                const statusClass = node.status === 'Ready' ? 'bg-success' : node.status === 'NotReady' ? 'bg-danger' : 'bg-secondary';
+                const podCount = podData.filter(p => p.node === node.name).length;
+                return `<tr>
+                    <td>${node.name}</td>
+                    <td><span class="badge ${statusClass} text-white">${node.status}</span></td>
+                    <td>${node.cpuAllocatable} / ${node.cpuCapacity} cores</td>
+                    <td>${memGB} / ${memCapGB} GB</td>
+                    <td>${podCount} / ${node.podAllocatable}</td>
+                    <td>${node.kubeVersion}</td>
+                </tr>`;
+            }).join('');
+        }
+
+        function init() {
+            const refreshBtn = document.createElement('button');
+            refreshBtn.className = 'btn btn-sm btn-outline-secondary ms-2';
+            refreshBtn.innerHTML = '<i class="fas fa-sync"></i> Refresh';
+            refreshBtn.onclick = fetchMetrics;
+            const cardHeader = document.querySelector('.card-header');
+            if (cardHeader) cardHeader.appendChild(refreshBtn);
+            fetchMetrics();
+            setInterval(fetchMetrics, 30000);
+        }
+
+        document.addEventListener('DOMContentLoaded', init);
+    })();
+
+  public__js__admin.js: |
+    (function() {
+        let currentConfig = null;
+
+        async function fetchConfig() {
+            try {
+                const response = await fetch('/api/pages', {
+                    headers: { 'Authorization': 'Basic ' + btoa('admin:admin123') }
+                });
+                if (!response.ok) throw new Error(`Failed to fetch configuration: ${response.status}`);
+                currentConfig = await response.json();
+                renderConfig();
+            } catch (error) {
+                console.error('Error fetching configuration:', error);
+                document.getElementById('adminContent').innerHTML = `<div class="alert alert-danger"><i class="fas fa-exclamation-triangle"></i> Error loading configuration: ${error.message}</div>`;
+            }
+        }
+
+        async function saveConfig(config) {
+            try {
+                const response = await fetch('/api/pages', {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Basic ' + btoa('admin:admin123'), 'Content-Type': 'application/json' },
+                    body: JSON.stringify(config)
+                });
+                if (!response.ok) {
+                    const err = await response.json();
+                    throw new Error(err.error || `Failed to save: ${response.status}`);
+                }
+                showToast('Configuration saved successfully!', 'success');
+                return await response.json();
+            } catch (error) {
+                showToast(`Error saving configuration: ${error.message}`, 'danger');
+                throw error;
+            }
+        }
+
+        function renderConfig() {
+            if (!currentConfig || !currentConfig.pages) return;
+            const editMode = isEditMode();
+            let html = `<div class="accordion" id="pagesAccordion">`;
+            currentConfig.pages.forEach((page, index) => {
+                const dis = editMode ? '' : 'disabled';
+                html += `
+                <div class="accordion-item">
+                    <h2 class="accordion-header" id="heading${index}">
+                        <button class="accordion-button ${index > 0 ? 'collapsed' : ''}" type="button" data-bs-toggle="collapse" data-bs-target="#collapse${index}">
+                            <i class="fas fa-${page.icon || 'file'} me-2"></i>${page.title}
+                            <span class="ms-auto">
+                                <span class="badge bg-${page.enabled ? 'success' : 'secondary'} rounded-pill me-2">${page.enabled ? 'Enabled' : 'Disabled'}</span>
+                                <span class="text-muted">${page.path}</span>
+                            </span>
+                        </button>
+                    </h2>
+                    <div id="collapse${index}" class="accordion-collapse collapse ${index === 0 ? 'show' : ''}">
+                        <div class="accordion-body">
+                            <div class="row">
+                                <div class="col-md-8">
+                                    <div class="mb-3"><label class="form-label">Page Title</label><input type="text" class="form-control" id="title${index}" value="${page.title}" ${dis}></div>
+                                    <div class="mb-3"><label class="form-label">URL Path</label><input type="text" class="form-control" id="path${index}" value="${page.path}" ${dis}></div>
+                                    <div class="mb-3"><label class="form-label">Icon (Font Awesome)</label><input type="text" class="form-control" id="icon${index}" value="${page.icon || ''}" ${dis}></div>
+                                    <div class="mb-3"><label class="form-label">Description</label><textarea class="form-control" id="description${index}" rows="2" ${dis}>${page.description || ''}</textarea></div>
+                                </div>
+                                <div class="col-md-4">
+                                    <div class="mb-3"><label class="form-label">Status</label><div class="form-check"><input class="form-check-input" type="checkbox" id="enabled${index}" ${page.enabled ? 'checked' : ''} ${dis}><label class="form-check-label">Enabled</label></div></div>
+                                    <div class="mb-3"><label class="form-label">Internal ID</label><input type="text" class="form-control-plaintext" value="${page.id}" readonly></div>
+                                    <div class="mt-4">
+                                        <a href="${page.path}" class="btn btn-outline-primary btn-sm" target="_blank"><i class="fas fa-external-link-alt"></i> Preview</a>
+                                        ${editMode ? `<button type="button" class="btn btn-outline-danger btn-sm ms-2" onclick="removePage(${index})"><i class="fas fa-trash"></i> Remove</button>` : ''}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>`;
+            });
+            html += `</div>
+            <div class="mt-4">
+                <button type="button" class="btn btn-success" onclick="addPage()" ${!editMode ? 'disabled' : ''}><i class="fas fa-plus"></i> Add New Page</button>
+                ${editMode ? `<button type="button" class="btn btn-primary ms-2" onclick="saveConfiguration()"><i class="fas fa-save"></i> Save Configuration</button>` : ''}
+            </div>`;
+            document.getElementById('adminContent').innerHTML = html;
+        }
+
+        function addPage() {
+            if (!currentConfig) return;
+            currentConfig.pages.push({ id: 'page_' + Date.now(), title: 'New Page', path: '/new-page', description: 'New page description', icon: 'file', enabled: true });
+            renderConfig();
+            setTimeout(() => {
+                const el = document.getElementById(`collapse${currentConfig.pages.length - 1}`);
+                if (el) el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }, 100);
+        }
+
+        function removePage(index) {
+            if (!currentConfig) return;
+            if (confirm(`Are you sure you want to remove '${currentConfig.pages[index].title}'?`)) {
+                currentConfig.pages.splice(index, 1);
+                renderConfig();
+            }
+        }
+
+        function saveConfiguration() {
+            if (!currentConfig) return;
+            if (!confirm('Save configuration? This will update the dashboard for all users.')) return;
+            currentConfig.pages.forEach((page, index) => {
+                const get = id => document.getElementById(id);
+                if (get(`title${index}`)) page.title = get(`title${index}`).value;
+                if (get(`path${index}`)) page.path = get(`path${index}`).value;
+                if (get(`icon${index}`)) page.icon = get(`icon${index}`).value;
+                if (get(`description${index}`)) page.description = get(`description${index}`).value;
+                if (get(`enabled${index}`)) page.enabled = get(`enabled${index}`).checked;
+            });
+            saveConfig(currentConfig);
+        }
+
+        function isEditMode() {
+            return document.getElementById('editModeSwitch').checked;
+        }
+
+        function showToast(message, type = 'info') {
+            const toast = document.createElement('div');
+            toast.className = `toast align-items-center text-white bg-${type} border-0`;
+            toast.role = 'alert';
+            toast.style.zIndex = '10000';
+            toast.innerHTML = `<div class="d-flex"><div class="toast-body">${message}</div><button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button></div>`;
+            document.body.appendChild(toast);
+            const bsToast = new bootstrap.Toast(toast, { autohide: true, delay: 5000 });
+            bsToast.show();
+            toast.addEventListener('hidden.bs.toast', () => toast.remove());
+        }
+
+        function init() {
+            const editModeSwitch = document.getElementById('editModeSwitch');
+            if (editModeSwitch) {
+                editModeSwitch.addEventListener('change', function() {
+                    renderConfig();
+                    showToast(this.checked ? 'Edit mode enabled.' : 'Edit mode disabled.', this.checked ? 'warning' : 'info');
+                });
+            }
+            window.addPage = addPage;
+            window.removePage = removePage;
+            window.saveConfiguration = saveConfiguration;
+            fetchConfig();
+            setInterval(fetchConfig, 60000);
+        }
+
+        document.addEventListener('DOMContentLoaded', init);
+    })();

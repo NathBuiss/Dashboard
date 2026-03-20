@@ -1,0 +1,27 @@
+apiVersion: v2
+name: tools-dashboard
+version: 1.0.0
+appVersion: 1.0.0
+
+description: A modern dashboard for accessing all your tools and services in Kubernetes, with automatic discovery of services that have Traefik annotations.
+
+keywords:
+  - kubernetes
+  - dashboard
+  - traefik
+  - tools
+  - monitoring
+  - admin
+
+home: https://github.com/example/tools-dashboard
+
+sources:
+  - https://github.com/example/tools-dashboard
+
+dependencies: []
+
+maintainers:
+  - name: Dashboard Maintainer
+    email: dashboard@example.com
+
+type: application

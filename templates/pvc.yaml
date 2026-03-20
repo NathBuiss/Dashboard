@@ -1,0 +1,38 @@
+{{- if .Values.pvc.configStorage }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "tools-dashboard.fullname" . }}-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tools-dashboard.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    {{- toYaml .Values.pvc.configStorage.accessModes | nindent 4 }}
+  resources:
+    requests:
+      storage: {{ .Values.pvc.configStorage.resources.requests.storage }}
+  {{- if .Values.pvc.storageClassName }}
+  storageClassName: {{ .Values.pvc.storageClassName }}
+  {{- end }}
+---
+{{- end }}
+
+{{- if .Values.pvc.dataStorage }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "tools-dashboard.fullname" . }}-data
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tools-dashboard.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    {{- toYaml .Values.pvc.dataStorage.accessModes | nindent 4 }}
+  resources:
+    requests:
+      storage: {{ .Values.pvc.dataStorage.resources.requests.storage }}
+  {{- if .Values.pvc.storageClassName }}
+  storageClassName: {{ .Values.pvc.storageClassName }}
+  {{- end }}
+{{- end }}

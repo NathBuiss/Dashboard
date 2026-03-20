@@ -1,0 +1,19 @@
+{{- $fullName := include "tools-dashboard.fullname" . -}}
+{{- $svcPort := .Values.dashboard.service.port -}}
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tools-dashboard.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.dashboard.service.type }}
+  ports:
+    - port: {{ $svcPort }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "tools-dashboard.selectorLabels" . | nindent 4 }}

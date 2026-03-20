@@ -1,0 +1,106 @@
+{{- $fullName := include "tools-dashboard.fullname" . -}}
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tools-dashboard.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.dashboard.replicas }}
+  selector:
+    matchLabels:
+      {{- include "tools-dashboard.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "tools-dashboard.selectorLabels" . | nindent 8 }}
+      {{- with .Values.dashboard.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "tools-dashboard.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.global.securityContext | nindent 8 }}
+      containers:
+        - name: dashboard
+          image: "{{ .Values.dashboard.image.repository }}:{{ .Values.dashboard.image.tag }}"
+          imagePullPolicy: {{ .Values.dashboard.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+          env:
+            {{- range $key, $value := .Values.dashboard.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.dashboard.resources | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          volumeMounts:
+            - name: app-files
+              mountPath: /app/server.js
+              subPath: server.js
+            - name: app-files
+              mountPath: /app/views/index.html
+              subPath: views__index.html
+            - name: app-files
+              mountPath: /app/views/services.html
+              subPath: views__services.html
+            - name: app-files
+              mountPath: /app/views/metrics.html
+              subPath: views__metrics.html
+            - name: app-files
+              mountPath: /app/views/admin.html
+              subPath: views__admin.html
+            - name: app-files
+              mountPath: /app/public/css/style.css
+              subPath: public__css__style.css
+            - name: app-files
+              mountPath: /app/public/js/main.js
+              subPath: public__js__main.js
+            - name: app-files
+              mountPath: /app/public/js/services.js
+              subPath: public__js__services.js
+            - name: app-files
+              mountPath: /app/public/js/metrics.js
+              subPath: public__js__metrics.js
+            - name: app-files
+              mountPath: /app/public/js/admin.js
+              subPath: public__js__admin.js
+            {{- if .Values.pvc.configStorage }}
+            - name: config-volume
+              mountPath: /config
+            {{- end }}
+            {{- if .Values.pvc.dataStorage }}
+            - name: data-volume
+              mountPath: /data
+            {{- end }}
+      volumes:
+        - name: app-files
+          configMap:
+            name: {{ $fullName }}-app-files
+        {{- if .Values.pvc.configStorage }}
+        - name: config-volume
+          persistentVolumeClaim:
+            claimName: {{ $fullName }}-config
+        {{- end }}
+        {{- if .Values.pvc.dataStorage }}
+        - name: data-volume
+          persistentVolumeClaim:
+            claimName: {{ $fullName }}-data
+        {{- end }}

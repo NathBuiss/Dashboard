@@ -1,0 +1,29 @@
+Thank you for installing {{ .Chart.Name }}!
+
+Your dashboard has been deployed to the "{{ .Release.Namespace }}" namespace.
+
+To access the dashboard:
+
+1. Ensure you have configured DNS to point {{ .Values.dashboard.ingress.host }} to your cluster's ingress controller.
+
+2. Access the dashboard at:
+
+   https://{{ .Values.dashboard.ingress.host }}
+
+3. Log in with the following credentials:
+
+   Username: {{ default "admin" .Values.dashboard.env.ADMIN_USERNAME }}
+   Password: {{ default "admin123" .Values.dashboard.env.ADMIN_PASSWORD }}
+
+
+For security, it is recommended to change the default password after first login.
+
+The dashboard provides access to:
+
+- Service Discovery: View all services with Traefik annotations
+- Cluster Metrics: Monitor node and pod resource usage
+- Administration: Configure dashboard settings and permissions
+
+To customize the deployment, you can modify the values.yaml file or use --set flags during installation.
+
+For more information, visit the project documentation at https://github.com/example/tools-dashboard

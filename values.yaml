@@ -1,0 +1,70 @@
+# Default values for tools-dashboard
+
+# Dashboard configuration
+dashboard:
+  image:
+    repository: node
+    tag: 16-alpine
+    pullPolicy: IfNotPresent
+
+  # Number of replicas
+  replicas: 1
+
+  # Service configuration
+  service:
+    port: 3000
+    type: ClusterIP
+
+  # Ingress configuration
+  ingress:
+    enabled: true
+    host: dashboard.tools.example.com
+    annotations:
+      traefik.ingress.kubernetes.io/router.entrypoints: web
+      traefik.ingress.kubernetes.io/router.middlewares: tools-stripprefix@kubernetescrd
+
+  # Environment variables
+  env:
+    ADMIN_USERNAME: admin
+    ADMIN_PASSWORD: admin123
+    METRICS_ENABLED: "true"
+    METRICS_INTERVAL: "30000"  # 30 seconds
+
+  # Resource limits
+  resources:
+    requests:
+      memory: 128Mi
+      cpu: 100m
+    limits:
+      memory: 256Mi
+      cpu: 200m
+
+  # Labels and annotations
+  labels: {}
+  podAnnotations: {}
+
+# PersistentVolumeClaims configuration
+pvc:
+  storageClassName: local-path
+  configStorage:
+    accessModes: ["ReadWriteOnce"]
+    resources:
+      requests:
+        storage: 500Mi
+  dataStorage:
+    accessModes: ["ReadWriteOnce"]
+    resources:
+      requests:
+        storage: 1Gi
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# Global settings
+global:
+  securityContext:
+    runAsUser: 1001
+    runAsGroup: 1001
+    fsGroup: 1001

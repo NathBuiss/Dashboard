@@ -1,0 +1,30 @@
+{{- if .Values.dashboard.ingress.enabled -}}
+{{- $fullName := include "tools-dashboard.fullname" . -}}
+{{- $svcPort := .Values.dashboard.service.port -}}
+{{- $ingressPath := .Values.dashboard.ingress.path | default "/" -}}
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tools-dashboard.labels" . | nindent 4 }}
+  {{- with .Values.dashboard.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: {{ .Values.dashboard.ingress.host }}
+      http:
+        paths:
+          - path: {{ $ingressPath }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $fullName }}
+                port:
+                  number: {{ $svcPort }}
+{{- end }}
