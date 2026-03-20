@@ -18,10 +18,9 @@ dashboard:
   # Ingress configuration
   ingress:
     enabled: true
-    host: dashboard.tools.example.com
+    host: dashboard.csirt.lab
     annotations:
-      traefik.ingress.kubernetes.io/router.entrypoints: web
-      traefik.ingress.kubernetes.io/router.middlewares: tools-stripprefix@kubernetescrd
+      traefik.ingress.kubernetes.io/router.entrypoints: websecure
 
   # Environment variables
   env:
