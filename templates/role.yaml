@@ -1,13 +1,12 @@
 apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
+kind: ClusterRole
 metadata:
   name: {{ include "tools-dashboard.fullname" . }}-role
-  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "tools-dashboard.labels" . | nindent 4 }}
 rules:
 - apiGroups: [""]
-  resources: ["pods", "services", "endpoints", "configmaps", "secrets"]
+  resources: ["nodes", "pods", "services", "endpoints", "configmaps", "namespaces"]
   verbs: ["get", "list", "watch"]
 - apiGroups: [""]
   resources: ["pods/log"]

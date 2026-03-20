@@ -29,7 +29,7 @@ spec:
           image: "{{ .Values.dashboard.image.repository }}:{{ .Values.dashboard.image.tag }}"
           imagePullPolicy: {{ .Values.dashboard.image.pullPolicy }}
           command: ["sh", "-c"]
-          args: ["cp /app/package.json /tmp/ && npm install --production --prefix /tmp --cache /tmp/.npm && NODE_PATH=/tmp/node_modules node /app/server.js"]
+          args: ["cp /app/requirements.txt /tmp/ && python -m venv /tmp/venv && /tmp/venv/bin/pip install --no-cache-dir -r /tmp/requirements.txt && /tmp/venv/bin/python /app/app.py"]
           ports:
             - name: http
               containerPort: 3000
@@ -55,11 +55,11 @@ spec:
             periodSeconds: 5
           volumeMounts:
             - name: app-files
-              mountPath: /app/package.json
-              subPath: package.json
+              mountPath: /app/requirements.txt
+              subPath: requirements.txt
             - name: app-files
-              mountPath: /app/server.js
-              subPath: server.js
+              mountPath: /app/app.py
+              subPath: app.py
             - name: app-files
               mountPath: /app/views/index.html
               subPath: views__index.html

@@ -3,8 +3,8 @@
 # Dashboard configuration
 dashboard:
   image:
-    repository: node
-    tag: 16-alpine
+    repository: python
+    tag: 3.11-alpine
     pullPolicy: IfNotPresent
 
   # Number of replicas
